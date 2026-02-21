@@ -9,6 +9,8 @@ TITLE=""
 AUTHOR=""
 NO_PAUSE=false
 KEEP_MD=false
+USE_LAYOUT=false
+USE_OCR=false
 
 usage() {
     cat <<'EOF'
@@ -21,6 +23,8 @@ Options:
   --author TEXT     Set the author name (default: "Unknown")
   --no-pause        Skip the manual review step
   --keep-md         Keep the intermediate Markdown file
+  --layout          Use spatial layout mode (for single-column PDFs)
+  --ocr             Force OCR via Tesseract (for scanned/garbled PDFs)
   -h, --help        Show this help message
 
 Steps:
@@ -42,6 +46,8 @@ while [[ $# -gt 0 ]]; do
         --author)  [[ $# -ge 2 ]] || { echo "Error: --author requires a value" >&2; exit 1; }; AUTHOR="$2"; shift 2 ;;
         --no-pause) NO_PAUSE=true; shift ;;
         --keep-md)  KEEP_MD=true; shift ;;
+        --layout)   USE_LAYOUT=true; shift ;;
+        --ocr)      USE_OCR=true; shift ;;
         -h|--help)  usage ;;
         -*)         echo "Unknown option: $1" >&2; exit 1 ;;
         *)          POSITIONAL+=("$1"); shift ;;
@@ -108,7 +114,10 @@ fi
 
 # --- Step 1: Extract and clean text ---
 echo "==> Step 1: Extracting text from PDF..."
-python3 "$SCRIPT_DIR/extract.py" "$INPUT_PDF" -o "$MD_FILE" -t "$TITLE" -a "$AUTHOR"
+EXTRACT_ARGS=("$INPUT_PDF" -o "$MD_FILE" -t "$TITLE" -a "$AUTHOR")
+[[ "$USE_LAYOUT" = true ]] && EXTRACT_ARGS+=(--layout)
+[[ "$USE_OCR" = true ]]    && EXTRACT_ARGS+=(--ocr)
+python3 "$SCRIPT_DIR/extract.py" "${EXTRACT_ARGS[@]}"
 
 # --- Step 2: Manual review ---
 if [[ "$NO_PAUSE" = false ]]; then

@@ -14,13 +14,20 @@ import sys
 from collections import Counter
 
 
-def extract_text(pdf_path):
-    """Run pdftotext -layout and return raw text."""
+def extract_text(pdf_path, use_layout=False):
+    """Run pdftotext and return raw text.
+
+    Default mode (no -layout) reads text in reading order, which handles
+    multi-column PDFs correctly. Use use_layout=True only for single-column
+    PDFs where spatial layout matters.
+    """
+    cmd = ["pdftotext", "-enc", "UTF-8"]
+    if use_layout:
+        cmd.append("-layout")
+    cmd.extend([pdf_path, "-"])
+
     try:
-        result = subprocess.run(
-            ["pdftotext", "-layout", "-enc", "UTF-8", pdf_path, "-"],
-            capture_output=True, text=True, check=True,
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         return result.stdout
     except FileNotFoundError:
         print("Error: pdftotext not found. Install poppler:", file=sys.stderr)
@@ -29,6 +36,69 @@ def extract_text(pdf_path):
     except subprocess.CalledProcessError as e:
         print(f"Error running pdftotext: {e.stderr}", file=sys.stderr)
         sys.exit(1)
+
+
+def extract_text_ocr(pdf_path):
+    """Fallback: extract text via Tesseract OCR for PDFs with custom font encodings.
+
+    Converts each page to an image with pdftoppm, then OCRs with Tesseract.
+    """
+    import tempfile
+    import glob as globmod
+
+    try:
+        subprocess.run(["tesseract", "--version"], capture_output=True, check=True)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Convert PDF pages to PNG images
+        try:
+            subprocess.run(
+                ["pdftoppm", "-png", "-r", "300", pdf_path, os.path.join(tmpdir, "page")],
+                capture_output=True, check=True,
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            return None
+
+        # OCR each page image in order
+        pages = sorted(globmod.glob(os.path.join(tmpdir, "page-*.png")))
+        if not pages:
+            return None
+
+        all_text = []
+        for page_img in pages:
+            try:
+                result = subprocess.run(
+                    ["tesseract", page_img, "stdout"],
+                    capture_output=True, text=True, check=True,
+                )
+                all_text.append(result.stdout)
+            except subprocess.CalledProcessError:
+                all_text.append("")
+            all_text.append("\f")  # page separator
+
+        return "".join(all_text)
+
+
+def looks_like_garbled_text(text, sample_size=2000):
+    """Detect if extracted text is garbled (custom font encoding).
+
+    Checks whether common English words appear in a sample.
+    PDFs with custom font encodings produce text where individual letters
+    are valid but words are unrecognizable.
+    """
+    sample = text[:sample_size].lower()
+    if not sample.strip():
+        return True
+
+    # Common English words that should appear in any readable document
+    common_words = {"the", "and", "for", "that", "with", "this", "from", "are",
+                    "was", "were", "have", "has", "been", "not", "but", "they",
+                    "which", "their", "will", "would", "about", "into"}
+    words = set(re.findall(r"\b[a-z]{3,}\b", sample))
+    matches = words & common_words
+    return len(matches) < 3
 
 
 def dehyphenate(text):
@@ -72,8 +142,21 @@ def strip_soft_hyphens(text):
 
 
 def is_toc_line(line):
-    """Detect table-of-contents lines with dot leaders (e.g. 'Chapter 1 ...... 5')."""
-    return bool(re.match(r"^.{3,}\s*[.·]{4,}\s*\d+\s*$", line.strip()))
+    """Detect table-of-contents lines with dot leaders or dash leaders.
+
+    Matches patterns like:
+      'Chapter 1 ........... 5'
+      'Chapter 1 ----------- 5'
+      'Abstract              01'  (space-padded with trailing page number)
+    """
+    stripped = line.strip()
+    # Dot or dash leaders
+    if re.match(r"^.{3,}\s*[.·\-]{4,}\s*\d+\s*$", stripped):
+        return True
+    # Space-padded: text followed by large gap then a page number
+    if re.match(r"^.{3,}\s{6,}\d{1,4}\s*$", stripped):
+        return True
+    return False
 
 
 def split_pages(raw_text):
@@ -273,6 +356,10 @@ def main():
     parser.add_argument("-o", "--output", help="Output Markdown file path")
     parser.add_argument("-t", "--title", default="Untitled", help="Document title")
     parser.add_argument("-a", "--author", default="Unknown", help="Document author")
+    parser.add_argument("--layout", action="store_true",
+                        help="Use pdftotext -layout mode (for single-column PDFs)")
+    parser.add_argument("--ocr", action="store_true",
+                        help="Force OCR extraction via Tesseract (for scanned/garbled PDFs)")
 
     args = parser.parse_args()
 
@@ -288,7 +375,28 @@ def main():
         out_path = base + ".md"
 
     print(f"Extracting text from: {args.pdf}")
-    raw = extract_text(args.pdf)
+
+    if args.ocr:
+        print("  Using OCR (Tesseract)...")
+        raw = extract_text_ocr(args.pdf)
+        if raw is None:
+            print("Error: OCR failed. Is tesseract installed? (brew install tesseract)",
+                  file=sys.stderr)
+            sys.exit(1)
+    else:
+        raw = extract_text(args.pdf, use_layout=args.layout)
+        if looks_like_garbled_text(raw):
+            print("  Warning: extracted text looks garbled (likely a custom-font PDF).")
+            print("  Trying OCR fallback via Tesseract...")
+            ocr_text = extract_text_ocr(args.pdf)
+            if ocr_text and not looks_like_garbled_text(ocr_text):
+                raw = ocr_text
+                print("  OCR succeeded.")
+            else:
+                print("  OCR not available or also failed. Output may be unreadable.",
+                      file=sys.stderr)
+                print("  Install Tesseract (brew install tesseract) or use a different PDF.",
+                      file=sys.stderr)
 
     print("Applying cleanup heuristics...")
     cleaned = cleanup_text(raw)
