@@ -18,7 +18,7 @@ def extract_text(pdf_path):
     """Run pdftotext -layout and return raw text."""
     try:
         result = subprocess.run(
-            ["pdftotext", "-layout", pdf_path, "-"],
+            ["pdftotext", "-layout", "-enc", "UTF-8", pdf_path, "-"],
             capture_output=True, text=True, check=True,
         )
         return result.stdout
@@ -29,6 +29,51 @@ def extract_text(pdf_path):
     except subprocess.CalledProcessError as e:
         print(f"Error running pdftotext: {e.stderr}", file=sys.stderr)
         sys.exit(1)
+
+
+def dehyphenate(text):
+    """Rejoin words split across lines with a trailing hyphen.
+
+    "infra-\\nstructure" → "infrastructure"
+    Conservative: preserves hyphens in compound words (self-service,
+    co-operate) and never touches URLs.
+    """
+    # Common compound-word prefixes — keep the hyphen for these
+    COMPOUND_PREFIXES = {
+        "anti", "co", "counter", "cross", "e", "ex", "multi", "non",
+        "post", "pre", "re", "self", "semi", "sub", "well", "world",
+    }
+
+    def _rejoin(m):
+        prefix = m.group(1)
+        suffix = m.group(2)
+        full_line_before = text[max(0, m.start() - 200):m.start()]
+
+        # Never dehyphenate inside URLs
+        if re.search(r"https?://\S*$", full_line_before):
+            return m.group(0)
+
+        # Keep hyphen for known compound-word prefixes
+        if prefix.lower() in COMPOUND_PREFIXES:
+            return prefix + "-" + suffix
+
+        # Only remove hyphen if both parts are lowercase (syllable break)
+        if prefix[-1:].islower() and suffix[0:1].islower():
+            return prefix + suffix
+
+        return prefix + "-" + suffix
+
+    return re.sub(r"(\w+)-\s*\n\s*(\w+)", _rejoin, text)
+
+
+def strip_soft_hyphens(text):
+    """Remove Unicode soft hyphens (U+00AD) that break display/search."""
+    return text.replace("\u00ad", "")
+
+
+def is_toc_line(line):
+    """Detect table-of-contents lines with dot leaders (e.g. 'Chapter 1 ...... 5')."""
+    return bool(re.match(r"^.{3,}\s*[.·]{4,}\s*\d+\s*$", line.strip()))
 
 
 def split_pages(raw_text):
@@ -117,10 +162,14 @@ def cleanup_text(raw_text):
     Apply cleanup heuristics to raw pdftotext output.
     Returns cleaned Markdown text.
     """
+    # Pre-processing: fix encoding artifacts before splitting
+    raw_text = strip_soft_hyphens(raw_text)
+    raw_text = dehyphenate(raw_text)
+
     pages = split_pages(raw_text)
     repeated = detect_repeated_lines(pages)
 
-    # Flatten all pages into lines, stripping headers/footers/page numbers
+    # Flatten all pages into lines, stripping headers/footers/page numbers/TOC
     all_lines = []
     for page in pages:
         for line in page.splitlines():
@@ -128,6 +177,8 @@ def cleanup_text(raw_text):
             if stripped in repeated:
                 continue
             if is_page_number(line):
+                continue
+            if is_toc_line(line):
                 continue
             all_lines.append(line)
         # Add a blank line at page boundaries
