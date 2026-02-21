@@ -243,7 +243,7 @@ def is_likely_heading(line, prev_blank, next_blank):
 def cleanup_text(raw_text):
     """
     Apply cleanup heuristics to raw pdftotext output.
-    Returns cleaned Markdown text.
+    Returns (cleaned_markdown_text, stats_dict).
     """
     # Pre-processing: fix encoding artifacts before splitting
     raw_text = strip_soft_hyphens(raw_text)
@@ -251,6 +251,14 @@ def cleanup_text(raw_text):
 
     pages = split_pages(raw_text)
     repeated = detect_repeated_lines(pages)
+
+    stats = {
+        "pages": len(pages),
+        "repeated_lines": len(repeated),
+        "page_numbers_stripped": 0,
+        "toc_lines_stripped": 0,
+        "headings_detected": 0,
+    }
 
     # Flatten all pages into lines, stripping headers/footers/page numbers/TOC
     all_lines = []
@@ -260,8 +268,10 @@ def cleanup_text(raw_text):
             if stripped in repeated:
                 continue
             if is_page_number(line):
+                stats["page_numbers_stripped"] += 1
                 continue
             if is_toc_line(line):
+                stats["toc_lines_stripped"] += 1
                 continue
             all_lines.append(line)
         # Add a blank line at page boundaries
@@ -291,6 +301,7 @@ def cleanup_text(raw_text):
         # Try heading detection
         is_heading, depth = is_likely_heading(line, prev_blank, next_blank)
         if is_heading:
+            stats["headings_detected"] += 1
             prefix = "#" * (depth + 1)  # h2 for depth=1, h3 for depth=2, etc.
             # Remove the numbering prefix for cleaner headings
             text = re.sub(r"^\d+(?:\.\d+)*\s+", "", stripped)
@@ -328,7 +339,7 @@ def cleanup_text(raw_text):
         md_lines.append(stripped)
         i += 1
 
-    return "\n".join(md_lines)
+    return "\n".join(md_lines), stats
 
 
 def yaml_escape(value):
@@ -374,41 +385,56 @@ def main():
         base = os.path.splitext(os.path.basename(args.pdf))[0]
         out_path = base + ".md"
 
+    warnings = []
+
     print(f"Extracting text from: {args.pdf}")
 
     if args.ocr:
-        print("  Using OCR (Tesseract)...")
         raw = extract_text_ocr(args.pdf)
         if raw is None:
             print("Error: OCR failed. Is tesseract installed? (brew install tesseract)",
                   file=sys.stderr)
             sys.exit(1)
+        warnings.append("Used OCR (Tesseract) — minor recognition errors are likely")
     else:
         raw = extract_text(args.pdf, use_layout=args.layout)
         if looks_like_garbled_text(raw):
-            print("  Warning: extracted text looks garbled (likely a custom-font PDF).")
-            print("  Trying OCR fallback via Tesseract...")
+            warnings.append("Text extraction returned garbled output (custom-font PDF)")
             ocr_text = extract_text_ocr(args.pdf)
             if ocr_text and not looks_like_garbled_text(ocr_text):
                 raw = ocr_text
-                print("  OCR succeeded.")
+                warnings.append("Fell back to OCR (Tesseract) — minor recognition errors are likely")
             else:
-                print("  OCR not available or also failed. Output may be unreadable.",
-                      file=sys.stderr)
-                print("  Install Tesseract (brew install tesseract) or use a different PDF.",
-                      file=sys.stderr)
+                warnings.append("OCR not available or also failed — output may be unreadable")
+                warnings.append("Install Tesseract (brew install tesseract) or use a different PDF")
 
     print("Applying cleanup heuristics...")
-    cleaned = cleanup_text(raw)
+    cleaned, stats = cleanup_text(raw)
 
     md = build_markdown(cleaned, title=args.title, author=args.author)
 
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(md)
 
-    print(f"Markdown written to: {out_path}")
     line_count = md.count("\n") + 1
-    print(f"  ({line_count} lines — review and edit before converting to EPUB)")
+
+    # --- Summary ---
+    print(f"\nMarkdown written to: {out_path}")
+    print(f"  {line_count} lines, {stats['pages']} pages processed")
+    print(f"  {stats['headings_detected']} headings detected, "
+          f"{stats['repeated_lines']} header/footer patterns stripped, "
+          f"{stats['page_numbers_stripped']} page numbers removed, "
+          f"{stats['toc_lines_stripped']} TOC lines removed")
+
+    if stats["headings_detected"] == 0:
+        warnings.append("No headings detected — you may need to add them manually")
+    if line_count < 20:
+        warnings.append("Very short output — text extraction may have failed")
+
+    if warnings:
+        print(f"\n  Warnings ({len(warnings)}):")
+        for w in warnings:
+            print(f"    - {w}")
 
 
 if __name__ == "__main__":
