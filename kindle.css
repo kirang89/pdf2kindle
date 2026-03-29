@@ -57,8 +57,16 @@ h3 {
 /* --- Paragraphs --- */
 
 p {
-  margin: 0.4em 0 0 0;
+  margin: 0.6em 0 0 0;
   text-indent: 0;
+}
+
+p + ul, p + ol {
+  margin-top: 0.25em;
+}
+
+ul + p, ol + p {
+  margin-top: 0.6em;
 }
 
 /* --- Blockquotes (callout boxes) --- */
@@ -78,6 +86,21 @@ blockquote strong {
   display: inline;
 }
 
+.callout {
+  margin: 0.8em 3% 0 3%;
+  padding: 0.5em 0.6em;
+  border-left: 0.2em solid #999;
+  font-size: 0.92em;
+}
+
+.callout p {
+  margin: 0.3em 0 0 0;
+}
+
+.callout strong {
+  display: inline;
+}
+
 /* --- Lists --- */
 
 ul, ol {
@@ -88,6 +111,10 @@ ul, ol {
 
 li {
   margin: 0.3em 0 0 0;
+}
+
+li > p {
+  margin-top: 0.15em;
 }
 
 /* --- Inline elements --- */

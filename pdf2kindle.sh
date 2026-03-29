@@ -151,6 +151,18 @@ echo ""
 echo "Done! EPUB written to: $OUTPUT_EPUB"
 echo "  Transfer to Kindle via USB or Send to Kindle."
 
+# --- Step 4: EPUB validation ---
+echo ""
+echo "==> Step 4: Validating EPUB..."
+QA_ARGS=("$OUTPUT_EPUB")
+[[ "$KEEP_MD" = true ]] && QA_ARGS+=(--source-md "$MD_FILE")
+if uv run python "$SCRIPT_DIR/qa_epub.py" "${QA_ARGS[@]}"; then
+    echo "    Validation passed — no issues found."
+else
+    echo "" >&2
+    echo "    WARNING: Validation found issues (see above). Review before sending to Kindle." >&2
+fi
+
 # --- Cleanup ---
 if [[ "$KEEP_MD" = true ]]; then
     echo "  Markdown file kept: $MD_FILE"
